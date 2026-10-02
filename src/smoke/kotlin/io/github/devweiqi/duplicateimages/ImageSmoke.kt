@@ -1,0 +1,279 @@
+package io.github.devweiqi.duplicateimages
+
+import com.android.tools.adtui.webp.WebpMetadata
+import java.awt.Color
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.Base64
+import javax.imageio.ImageIO
+
+fun main() {
+    val code = try {
+        runChecks()
+        0
+    } catch (e: Throwable) {
+        e.printStackTrace()
+        1
+    }
+    // The isolated mock IDE starts platform threads outside the test disposable.
+    kotlin.system.exitProcess(code)
+}
+
+private fun runChecks() {
+    val directory = Files.createTempDirectory("duplicate-images-check")
+    try {
+        fun entry(
+            name: String,
+            size: Int = 96,
+            color: Int = 0xe5bb65,
+            circle: Boolean = false,
+        ): ImageEntry {
+            val image = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+            image.createGraphics().let { g ->
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g.color = Color(color)
+                if (circle) {
+                    g.fillOval(size / 8, size / 8, size * 3 / 4, size * 3 / 4)
+                } else {
+                    val xs = intArrayOf(48, 60, 88, 68, 73, 48, 23, 28, 8, 36).map { it * size / 96 }.toIntArray()
+                    val ys = intArrayOf(8, 33, 37, 57, 85, 72, 85, 57, 37, 33).map { it * size / 96 }.toIntArray()
+                    g.fillPolygon(xs, ys, xs.size)
+                }
+                g.dispose()
+            }
+            val file = directory.resolve(name)
+            ImageIO.write(image, "png", file.toFile())
+            return readImage(file)
+        }
+        val a = entry("a.png")
+        val b = entry("b.png", size = 192)
+        val c = entry("c.png", color = 0x88aafa)
+        val d = entry("d.png")
+        val different = entry("circle.png", circle = true)
+        val ab = checkNotNull(compareImages(a, b))
+        val ac = checkNotNull(compareImages(a, c))
+        val bc = checkNotNull(compareImages(b, c))
+        check(ab.resized && !ab.tinted)
+        check(ac.tinted && !ac.resized)
+        check(bc.resized && bc.tinted)
+        check(compareImages(a, d)?.exact == true)
+        check(compareImages(a, different) == null) { "A circle cannot match a star" }
+        check(a.colorText == "#E5BB65") { a.colorText }
+        check(c.colorText == "#88AAFA")
+        val all = listOf(a, b, c, d, different)
+        check(
+            compareAll(all)
+                .groups
+                .single()
+                .images
+                .map { it.path.fileName.toString() }
+                .toSet() == setOf("a.png", "d.png"),
+        )
+        val dimensions = compareAll(all, MatchOptions(dimensions = true)).groups.single()
+        check(dimensions.images.size == 3 && c !in dimensions.images)
+        val tint = compareAll(all, MatchOptions(tint = true)).groups.single()
+        check(tint.images.size == 3 && b !in tint.images)
+        val both = compareAll(all, MatchOptions(true, true)).groups.single()
+        check(both.images.size == 4 && both.matches.size == 6)
+        check(!MatchOptions(dimensions = true).accepts(bc))
+        check(!MatchOptions(tint = true).accepts(bc))
+        check(MatchOptions(true, true).accepts(bc))
+        checkPanel(both)
+        println("Exact copies, size, Tint, combined differences, HEX colors, negatives and all four filter combinations: OK")
+
+        val hidden = BufferedImage(8, 8, BufferedImage.TYPE_INT_ARGB)
+        hidden.setRGB(0, 0, 0x00ff0000)
+        val first = describeImage(directory.resolve("hidden-a.png"), byteArrayOf(1), hidden)
+        hidden.setRGB(0, 0, 0x000000ff)
+        val second = describeImage(directory.resolve("hidden-b.png"), byteArrayOf(2), hidden)
+        check(compareImages(first, second)?.description == "Identical pixels")
+        val wide = entry("wide.png").copy(width = 192)
+        check(compareImages(a, wide.copy(fileHash = "different", pixelHash = "different")) == null)
+        var interrupted = false
+        try {
+            compareAll(all) { throw InterruptedException() }
+        } catch (_: InterruptedException) {
+            interrupted = true
+        }
+        check(interrupted)
+
+        fun striped(
+            name: String,
+            size: Int,
+            shift: Int,
+        ): ImageEntry {
+            val image = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+            for (y in 0 until size) {
+                for (x in 0 until size) {
+                    image.setRGB(
+                        x,
+                        y,
+                        if (x <
+                            size / 2
+                        ) {
+                            Color(80 + shift, 20 + shift, 20 + shift).rgb
+                        } else {
+                            Color(20 + shift, 20 + shift, 80 + shift).rgb
+                        },
+                    )
+                }
+            }
+            return describeImage(directory.resolve(name), name.toByteArray(), image)
+        }
+        val chain = listOf(striped("x", 64, 0), striped("y", 96, 10), striped("z", 128, 20))
+        val chainGroup = compareAll(chain, MatchOptions(true, true)).groups.single()
+        check(chainGroup.images.size == 3 && chainGroup.matches.size == 2)
+        check(compareImages(chain[0], chain[2]) == null) { "Do not infer a direct match from group membership" }
+        println("Transparency, aspect ratio, cancellation and non-transitive pair relationships: OK")
+
+        fun fails(path: Path) {
+            try {
+                readImage(path)
+                error("Malformed image accepted: $path")
+            } catch (_: IOException) {
+            }
+        }
+        fails(Files.write(directory.resolve("bad.png"), byteArrayOf(1, 2, 3)))
+        fails(Files.write(directory.resolve("large.png"), ByteArray(32 * 1024 * 1024 + 1)))
+        val animation = ByteArray(30)
+        "RIFF".toByteArray().copyInto(animation)
+        "WEBPVP8X".toByteArray().copyInto(animation, 8)
+        animation[20] = 2
+        fails(Files.write(directory.resolve("animated.webp"), animation))
+        WebpMetadata.ensureWebpRegistered()
+        val webp = Base64.getDecoder().decode("UklGRhwAAABXRUJQVlA4TA8AAAAvAUAAAAcQ/Y/+ByKi/wEA")
+        val decoded = readImage(Files.write(directory.resolve("static.webp"), webp))
+        check(decoded.width == 2 && decoded.height == 2)
+        val jpeg = BufferedImage(40, 24, BufferedImage.TYPE_INT_RGB)
+        jpeg.createGraphics().apply {
+            color = Color(0x88aafa)
+            fillRect(0, 0, 40, 24)
+            dispose()
+        }
+        val out = ByteArrayOutputStream()
+        check(ImageIO.write(jpeg, "jpeg", out))
+        check(readImage(Files.write(directory.resolve("photo.jpg"), out.toByteArray())).dimensions == "40 × 24")
+        check(isImagePath(Path.of("UPPER.PNG")))
+        check(!isImagePath(Path.of("vector.xml")))
+        check(isScanPath(directory.resolve("shared/src/commonMain/composeResources/drawable/image.png"), listOf(directory)))
+        check(!isScanPath(directory.resolve("build/image.png"), listOf(directory)))
+        check(!isScanPath(directory.resolve(".git/image.png"), listOf(directory)))
+        check(!isScanPath(directory.resolveSibling("elsewhere/image.png"), listOf(directory)))
+        println("Real PNG/JPEG/WebP decoding, malformed/oversized/animated files and scan path exclusions: OK")
+    } finally {
+        Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+    }
+}
+
+private fun checkPanel(group: ImageGroup) {
+    val lifetime = com.intellij.openapi.util.Disposer.newDisposable()
+    val environment = com.intellij.core.CoreApplicationEnvironment(lifetime)
+    val project = com.intellij.mock.MockProject(environment.application.picoContainer, lifetime)
+    val properties = MemoryProperties()
+    project.registerService(com.intellij.ide.util.PropertiesComponent::class.java, properties)
+    environment.application.registerService(com.intellij.ide.util.PropertiesComponent::class.java, properties)
+    try {
+        javax.swing.SwingUtilities.invokeAndWait {
+            com.intellij.ui.IconManager.activate(com.intellij.ui.icons.CoreIconManager())
+            val service = ImageScanService(project)
+            com.intellij.openapi.util.Disposer.register(lifetime, service)
+            ImageScanService::class.java.getDeclaredField("snapshot").apply { isAccessible = true }
+                .set(service, ScanSnapshot(listOf(group), group.images.size, message = "Smoke check"))
+            val panel = ImagePanel(project, service)
+            try {
+                fun components(container: java.awt.Container): List<java.awt.Component> = container.components.flatMap {
+                    listOf(it) + if (it is java.awt.Container) components(it) else emptyList()
+                }
+                val checks = components(panel).filterIsInstance<javax.swing.JCheckBox>()
+                check(!checks.single { it.text == "Include different dimensions" }.isSelected)
+                check(!checks.single { it.text == "Include different Tint" }.isSelected)
+                check(checks.single { it.text == "Auto-check changes" }.isSelected)
+                val table = components(panel).filterIsInstance<javax.swing.JTable>().single()
+                check(table.rowCount == 6)
+                check((0 until table.rowCount).any { table.getValueAt(it, 2).toString().contains("#E5BB65 → #88AAFA") })
+                table.setRowSelectionInterval(0, 0)
+                check(!components(panel).filterIsInstance<javax.swing.JButton>().single { it.text == "Open file" }.isEnabled)
+                panel.search.text = "not-a-real-image"
+                check(table.rowCount == 0)
+                panel.search.text = ""
+                check(table.rowCount == 6)
+                panel.setSize(1280, 740)
+
+                fun layout(container: java.awt.Container) {
+                    container.doLayout()
+                    container.components.filterIsInstance<java.awt.Container>().forEach(::layout)
+                }
+                repeat(4) { layout(panel) }
+                check(checks.all { it.width > 0 && it.height > 0 })
+                val image = BufferedImage(1280, 740, BufferedImage.TYPE_INT_ARGB)
+                image.createGraphics().apply {
+                    panel.printAll(this)
+                    dispose()
+                }
+                Files.createDirectories(Path.of("build"))
+                ImageIO.write(image, "png", Path.of("build/panel-smoke.png").toFile())
+                val goldPixels = (0 until image.height).sumOf { y -> (0 until image.width).count { x -> image.getRGB(x, y) and 0xffffff == 0xe5bb65 } }
+                check(goldPixels > 500) { "Image cards rendered blank: only $goldPixels gold pixels" }
+            } finally {
+                panel.dispose()
+            }
+        }
+        println("Native Swing panel: default checkboxes, HEX pair table, pair selection, file actions and search: OK")
+    } finally {
+        com.intellij.openapi.util.Disposer.dispose(lifetime)
+    }
+}
+
+private class MemoryProperties : com.intellij.ide.util.PropertiesComponent() {
+    private val values = mutableMapOf<String, String>()
+
+    override fun unsetValue(name: String) {
+        values.remove(name)
+    }
+
+    override fun isValueSet(name: String): Boolean = name in values
+
+    override fun getValue(name: String): String? = values[name]
+
+    override fun setValue(name: String, value: String?) {
+        if (value == null) unsetValue(name) else values[name] = value
+    }
+
+    override fun setValue(name: String, value: String?, defaultValue: String?) {
+        setValue(name, value.takeUnless { it == defaultValue })
+    }
+
+    override fun setValue(name: String, value: Float, defaultValue: Float) {
+        setValue(name, value.toString(), defaultValue.toString())
+    }
+
+    override fun setValue(name: String, value: Int, defaultValue: Int) {
+        setValue(name, value.toString(), defaultValue.toString())
+    }
+
+    override fun setValue(name: String, value: Boolean, defaultValue: Boolean) {
+        setValue(name, value.toString(), defaultValue.toString())
+    }
+
+    override fun getValues(name: String): Array<String>? = values[name]?.split("\n")?.toTypedArray()
+
+    override fun setValues(name: String, values: Array<out String>?) {
+        setValue(name, values?.joinToString("\n"))
+    }
+
+    override fun getList(name: String): List<String>? = values[name]?.split("\n")
+
+    override fun setList(name: String, values: MutableCollection<String>?) {
+        setValue(name, values?.joinToString("\n"))
+    }
+
+    override fun updateValue(name: String, value: Boolean): Boolean {
+        val changed = getBoolean(name) != value
+        setValue(name, value)
+        return changed
+    }
+}

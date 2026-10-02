@@ -1,0 +1,37 @@
+# Duplicate Image Finder
+
+An Android Studio plugin for finding identical and similar static images across project modules.
+
+## Use
+
+Install the ZIP from **Settings → Plugins → ⚙ → Install Plugin from Disk**, then open **View → Tool Windows → Duplicate Image Finder**.
+
+By default, only identical files or decoded pixels are listed. Enable **Include different dimensions** or **Include different Tint** to broaden the search. Both must be enabled for pairs that differ in both dimensions and Tint.
+
+Select a group to compare thumbnails, original dimensions, file paths, and HEX colors. The pair table checks each relationship independently; belonging to the same group does not imply that every pair matches. Select a card to open its file, copy its path, or access native IDE actions.
+
+**Auto-check changes** is enabled by default. Saved changes detected by the IDE trigger a debounced background scan, reusing cached image fingerprints. New matching pairs produce a notification with a **View matches** action. The initial scan is silent. Settings are remembered per project.
+
+## Scope
+
+* Static PNG, JPEG, and WebP. Animated images and vector XML/SVG are not supported yet.
+* Resized copies are heuristic matches; differently tinted **monochrome artwork** is compared by shape. Arbitrary photo recoloring, rotations, and crops are not detected reliably.
+* Tint is shown as HEX with color swatches. Multicolor images show up to three main colors instead of a single Tint.
+* Images can intentionally differ for density, accessibility, or small-size artwork. Results are suggestions, never deletion recommendations. This plugin does not modify files.
+* Native Find Usages depends on the IDE's support for the selected file; generated Compose references may not be resolved.
+
+Project content roots are scanned, excluding IDE-excluded roots, hidden directories, build output, and common dependency directories. Limits: 2,000 images, 100,000 filesystem entries, 20,000 matching pairs, 32 MiB per image, and 16 million decoded pixels. The pair table shows the first 64 images of a large group. Limits and unreadable or unsupported images are reported under **Scan issues**.
+
+## Build
+
+Requires JDK 21 and Android Studio based on IntelliJ Platform 261 or later with its bundled WebP plugin.
+
+```sh
+./gradlew buildPlugin check
+# Override the local IDE path if needed:
+./gradlew buildPlugin -PstudioPath="/path/to/Android Studio.app"
+```
+
+The installable ZIP is in `build/distributions/`. Checks cover exact copies, size and Tint combinations, filtering, non-transitive relationships, transparent pixels, malformed images, and static WebP decoding.
+
+Apache License 2.0. Build setup adapted from [Animated WebP Viewer](https://github.com/dev-weiqi/animated-webp-viewer).

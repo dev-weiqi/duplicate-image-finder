@@ -1,0 +1,20 @@
+<idea-plugin url="https://github.com/dev-weiqi/duplicate-image-finder">
+    <id>io.github.devweiqi.duplicate-image-finder</id>
+    <name>Duplicate Image Finder</name>
+    <vendor email="dev.weiqi@gmail.com" url="https://github.com/dev-weiqi">dev-weiqi</vendor>
+    <description><![CDATA[
+        <p>Find identical and similar static PNG, JPEG, and WebP images across project modules.</p>
+        <p>Compare images side by side, inspect dimensions, paths, HEX colors, and pairwise differences.
+        Discover resized copies and differently tinted monochrome artwork, including combinations of both.</p>
+        <p>Automatically check saved image changes and notify you of new matches. Visual matches are suggestions, not deletion recommendations. No files are modified.</p>
+        <p>Open View &gt; Tool Windows &gt; Duplicate Image Finder.</p>
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>intellij.webp</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Duplicate Image Finder" anchor="bottom" icon="/icons/duplicateImages.svg"
+                    factoryClass="io.github.devweiqi.duplicateimages.ImageToolWindowFactory"/>
+        <postStartupActivity implementation="io.github.devweiqi.duplicateimages.ImageStartup"/>
+        <notificationGroup id="Duplicate Image Finder" displayType="BALLOON" isLogByDefault="true"/>
+    </extensions>
+</idea-plugin>
