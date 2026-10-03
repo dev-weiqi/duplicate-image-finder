@@ -95,6 +95,14 @@ private fun runChecks() {
         check(isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("drawable/icon.png"))))
         check(isDensityVariant(hdpi.copy(path = directory.resolve("app/src/main/res/drawable-hdpi/icon.png")), xhdpi.copy(path = directory.resolve("app/src/main/res/drawable-480dpi/icon.webp"))))
         check(!isDensityVariant(a.copy(path = directory.resolve("photos/icon.png")), b.copy(path = directory.resolve("photos/large/icon.png"))))
+        val dpiCopies = listOf(hdpi, xhdpi, hdpi.copy(path = resourceRoot.resolve("drawable-hdpi/copy.png")), xhdpi.copy(path = resourceRoot.resolve("drawable-xhdpi/copy.png")))
+        for (options in listOf(MatchOptions(), MatchOptions(true, true))) {
+            val familyGroup = compareAll(dpiCopies, options).groups.single()
+            check(familyGroup.images.size == 2) { "Density siblings must occupy one card per resource, including indirect matches" }
+            check(familyGroup.files.size == 4 && familyGroup.variants.values.all { it.size == 2 })
+            check(familyGroup.matchesByPair.values.single().exact)
+            check(familyGroup.matches.none { isDensityVariant(it.first, it.second) })
+        }
         val progressValues = mutableListOf<Pair<Long, Long>>()
         compareAll(all, MatchOptions(true, true), progress = { done, total -> progressValues.add(done to total) })
         check(progressValues.first() == 0L to 10L && progressValues.last() == 10L to 10L)
@@ -315,6 +323,34 @@ private fun checkPanel(group: ImageGroup) {
                 check(resultList.model.size == 500 && listUpdates <= 2) { "Group list was updated $listUpdates times" }
                 check(resultList.fixedCellHeight > 0 && resultList.fixedCellWidth > 0)
                 println("500 groups are published with $listUpdates list events and fixed row metrics: OK")
+                val densityRoot = Path.of("/sample/shared/src/commonMain/composeResources")
+                val small = group.images.first().copy(path = densityRoot.resolve("drawable-hdpi/icon.png"))
+                val largeVariant = group.images[1].copy(path = densityRoot.resolve("drawable-xhdpi/icon.png"))
+                // Only the non-representative variant matches the other resource.
+                val copyVariant = largeVariant.copy(path = densityRoot.resolve("drawable-xhdpi/copy.png"))
+                val densityGroup = compareAll(listOf(small, largeVariant, copyVariant)).groups.single()
+                snapshotField.set(service, ScanSnapshot(listOf(densityGroup), 3))
+                service.listeners.forEach { it() }
+                val cards = components(panel).filterIsInstance<javax.swing.JList<*>>().single { it !== resultList }
+                check(cards.model.size == 2 && table.rowCount == 1)
+                check(table.getValueAt(0, 1).toString().contains("xhdpi: ${largeVariant.dimensions}"))
+                check(table.getValueAt(0, 3) == "Identical file")
+                val selector = components(panel).filterIsInstance<javax.swing.JComboBox<*>>().single()
+                check(selector.isVisible && selector.itemCount == 2)
+                selector.selectedIndex = 1
+                val selectedPath = components(panel).filterIsInstance<javax.swing.JTextField>().single { it.accessibleContext.accessibleName == "Selected image full path" }
+                check(selectedPath.text == largeVariant.path.toString())
+                panel.search.text = "drawable-xhdpi/icon"
+                check(resultList.model.size == 1) { "Search must include hidden density variants" }
+                panel.setSize(1280, 740)
+                repeat(4) { layout(panel) }
+                val densityPreview = BufferedImage(1280, 740, BufferedImage.TYPE_INT_ARGB)
+                densityPreview.createGraphics().apply {
+                    panel.printAll(this)
+                    dispose()
+                }
+                ImageIO.write(densityPreview, "png", Path.of("build/density-panel-smoke.png").toFile())
+                println("Density families: two cards, actual matched dimensions, variant file selection and search: OK")
             } finally {
                 panel.dispose()
             }

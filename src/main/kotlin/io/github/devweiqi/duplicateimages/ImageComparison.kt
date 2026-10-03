@@ -82,11 +82,21 @@ data class ImageMatch(
     val key: String = listOf(first.path.toString(), second.path.toString()).sorted().joinToString("\u0000") + "\u0000" + description
 }
 
+// Keep ambiguous same-density files separate (for example icon.png and icon.webp).
+private fun resourceFamilies(images: List<ImageEntry>): List<List<ImageEntry>> =
+    images.groupBy { it.densityVariant?.copy(density = "") ?: it.path }.values.flatMap { entries ->
+        if (entries.map { it.densityVariant?.density }.distinct().size == entries.size) listOf(entries) else entries.map { listOf(it) }
+    }
+
 data class ImageGroup(
-    val images: List<ImageEntry>,
+    val files: List<ImageEntry>,
     val matches: List<ImageMatch>,
 ) {
-    val matchesByPair = matches.associateBy { setOf(it.first.path, it.second.path) }
+    val variants = resourceFamilies(files).associate { it.first().path to it }
+    val images = variants.values.map { it.first() }
+    private val representatives = variants.flatMap { (path, entries) -> entries.map { it.path to path } }.toMap()
+    val matchesByPair = matches.groupBy { setOf(representatives.getValue(it.first.path), representatives.getValue(it.second.path)) }
+        .mapValues { (_, pairs) -> pairs.minBy { (if (it.exact) 0 else 1) + (if (it.resized) 2 else 0) + (if (it.tinted) 2 else 0) } }
 }
 
 data class ComparisonResult(
@@ -289,6 +299,11 @@ fun compareAll(
         }
         return node
     }
+    val index = images.withIndex().associate { it.value.path to it.index }
+    resourceFamilies(images).forEach { family ->
+        val representative = index.getValue(family.first().path)
+        family.drop(1).forEach { parents[index.getValue(it.path)] = representative }
+    }
     val matches = mutableListOf<ImageMatch>()
     var limited = false
     val total = images.size.toLong() * (images.size - 1) / 2
@@ -314,11 +329,10 @@ fun compareAll(
     }
     progress(completed, total)
     val byRoot = images.indices.groupBy { root(it) }
-    val index = images.withIndex().associate { it.value.path to it.index }
     val edges = matches.groupBy { root(index.getValue(it.first.path)) }
     val groups =
         byRoot
-            .filterValues { it.size > 1 }
+            .filterKeys { it in edges }
             .map { (key, indices) ->
                 ImageGroup(indices.map { images[it] }, edges[key].orEmpty())
             }.sortedBy {

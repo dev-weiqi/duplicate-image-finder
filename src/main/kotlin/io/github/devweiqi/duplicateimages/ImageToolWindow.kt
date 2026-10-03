@@ -39,6 +39,7 @@ import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.Icon
 import javax.swing.JButton
+import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
@@ -87,6 +88,11 @@ class ImagePanel(
     private val heading = textLabel("Select an image group")
     private val path = JBTextField().apply { isEditable = false }
     private val color = JLabel()
+    private val variant = JComboBox<String>().apply {
+        accessibleContext.accessibleName = "Density variant"
+        isVisible = false
+    }
+    private var selectingVariant = false
     private val dimensions = JBCheckBox("Include different dimensions", service.options.dimensions)
     private val tint = JBCheckBox("Include different Tint", service.options.tint)
     private val auto = JBCheckBox("Auto-check changes", service.autoCheck)
@@ -154,14 +160,16 @@ class ImagePanel(
         images.fixedCellHeight = JBUI.scale(232)
         images.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
         images.cellRenderer =
-            ImageRenderer { image ->
+            ImageRenderer({ image ->
                 current
                     ?.images
                     ?.indexOf(image)
                     ?.let(::imageId)
                     .orEmpty()
-            }
-        images.addListSelectionListener { if (!it.valueIsAdjusting) showSelected() }
+            }, { image -> current?.variants?.get(image.path)?.size ?: 1 }, { image ->
+                if (images.selectedValuesList.singleOrNull() === image) selectedImage() ?: image else image
+            })
+        images.addListSelectionListener { if (!it.valueIsAdjusting) selectResource() }
         images.accessibleContext.accessibleName = "Images in selected group. Select a file to inspect its full path."
         val imageScroll =
             JBScrollPane(images).apply {
@@ -176,6 +184,7 @@ class ImagePanel(
             }
         val fileControls =
             JPanel(FlowLayout(FlowLayout.LEADING)).apply {
+                add(variant)
                 add(open)
                 add(copy)
                 add(actions)
@@ -264,13 +273,27 @@ class ImagePanel(
                     ?: Messages.showInfoMessage(project, "File is no longer available. Scan images again.", TOOL_WINDOW)
             }
         }
+        variant.addActionListener { if (!selectingVariant) showSelected() }
         copy.addActionListener { selectedImage()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it.path.toString())) } }
         actions.addActionListener { showActions() }
         service.listeners.add(listener)
         refresh()
     }
 
-    private fun selectedImage(): ImageEntry? = images.selectedValuesList.singleOrNull()
+    private fun selectedImage(): ImageEntry? {
+        val representative = images.selectedValuesList.singleOrNull() ?: return null
+        return current?.variants?.get(representative.path)?.getOrNull(variant.selectedIndex) ?: representative
+    }
+
+    private fun selectResource() {
+        selectingVariant = true
+        variant.removeAllItems()
+        val entries = current?.variants?.get(images.selectedValuesList.singleOrNull()?.path).orEmpty()
+        entries.forEach { variant.addItem("${it.densityVariant?.density ?: "Original"} · ${it.dimensions}") }
+        variant.isVisible = entries.size > 1
+        selectingVariant = false
+        showSelected()
+    }
 
     private fun showSelected() {
         val image = selectedImage()
@@ -281,6 +304,7 @@ class ImagePanel(
         open.isEnabled = image != null
         copy.isEnabled = image != null
         actions.isEnabled = image != null
+        images.repaint()
     }
 
     private fun refresh() {
@@ -310,11 +334,11 @@ class ImagePanel(
         groupModel.clear()
         groupModel.addAll(
             service.snapshot.groups.filter { group ->
-                group.images.any { it.path.toString().contains(query, ignoreCase = true) }
+                group.files.any { it.path.toString().contains(query, ignoreCase = true) }
             }
         )
         val index =
-            (0 until groupModel.size()).firstOrNull { i -> groupModel[i].images.any { it.path == selectedPath } }
+            (0 until groupModel.size()).firstOrNull { i -> groupModel[i].files.any { it.path == selectedPath } }
                 ?: if (groupModel.isEmpty) -1 else 0
         groups.selectedIndex = index
         updating = false
@@ -333,7 +357,7 @@ class ImagePanel(
             ) {
                 "No matches · Enable dimensions or Tint to broaden the check"
             } else {
-                "${group.images.first().path.fileName} · ${group.images.size} images"
+                "${group.images.first().path.fileName} · ${group.images.size} resources"
             }
         if (group == null) {
             showSelected()
@@ -386,9 +410,9 @@ private class GroupRenderer : ListCellRenderer<ImageGroup> {
     ): Component {
         val types =
             buildList {
-                if (value.matches.any { it.exact || it.first.pixelHash == it.second.pixelHash }) add("Identical")
-                if (value.matches.any { it.resized }) add("Dimensions")
-                if (value.matches.any { it.tinted }) add("Tint")
+                if (value.matchesByPair.values.any { it.exact || it.first.pixelHash == it.second.pixelHash }) add("Identical")
+                if (value.matchesByPair.values.any { it.resized }) add("Dimensions")
+                if (value.matchesByPair.values.any { it.tinted }) add("Tint")
             }.joinToString(" + ")
         return RendererPanel(BorderLayout(10, 0)).apply {
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(12, 8))
@@ -410,7 +434,7 @@ private class GroupRenderer : ListCellRenderer<ImageGroup> {
                         },
                     )
                     add(
-                        textLabel("${value.images.size} images · $types").apply {
+                        textLabel("${value.images.size} resources · $types").apply {
                             foreground =
                                 if (selected) list.selectionForeground else JBColor.GRAY
                             ; border = JBUI.Borders.emptyTop(5)
@@ -425,15 +449,18 @@ private class GroupRenderer : ListCellRenderer<ImageGroup> {
 
 private class ImageRenderer(
     private val id: (ImageEntry) -> String,
+    private val variantCount: (ImageEntry) -> Int,
+    private val displayedImage: (ImageEntry) -> ImageEntry,
 ) : ListCellRenderer<ImageEntry> {
     override fun getListCellRendererComponent(
         list: JList<out ImageEntry>,
-        image: ImageEntry,
+        representative: ImageEntry,
         index: Int,
         selected: Boolean,
         focus: Boolean,
     ): Component =
         RendererPanel(BorderLayout()).apply {
+            val image = displayedImage(representative)
             background = list.background
             border =
                 BorderFactory.createCompoundBorder(
@@ -449,7 +476,7 @@ private class ImageRenderer(
                     isOpaque = false
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
                     border = JBUI.Borders.empty(4, 8)
-                    add(textLabel("${id(image)} · ${image.path.fileName}").apply { toolTipText = text })
+                    add(textLabel("${id(representative)} · ${image.path.fileName}").apply { toolTipText = text })
                     add(textLabel("${image.dimensions} · ${"%.1f".format(image.bytes / 1024.0)} KB"))
                     add(
                         textLabel(
@@ -463,6 +490,7 @@ private class ImageRenderer(
                                 if (image.monochrome) "Tint" else "Main colors"
                         },
                     )
+                    if (variantCount(representative) > 1) add(textLabel("${variantCount(representative)} density variants"))
                     toolTipText = image.path.toString()
                 },
                 BorderLayout.CENTER,
@@ -573,12 +601,19 @@ private class PairTableModel : AbstractTableModel() {
     override fun getColumnName(column: Int): String = columns[column]
 
     override fun getValueAt(row: Int, column: Int): Any {
-        val (a, b) = pairs[row]
+        val (first, second) = pairs[row]
+        val match = group?.matchesByPair?.get(setOf(first.path, second.path))
+        val forward = match == null || group?.variants?.get(first.path)?.any { it.path == match.first.path } == true
+        val a = if (forward) match?.first ?: first else match!!.second
+        val b = if (forward) match?.second ?: second else match!!.first
+
+        fun dimensions(image: ImageEntry, representative: ImageEntry): String =
+            if ((group?.variants?.get(representative.path)?.size ?: 0) > 1) "${image.densityVariant?.density}: ${image.dimensions}" else image.dimensions
         return when (column) {
-            0 -> "${imageId(group!!.images.indexOf(a))} ↔ ${imageId(group!!.images.indexOf(b))}"
-            1 -> if (a.dimensions == b.dimensions) a.dimensions else "${a.dimensions} → ${b.dimensions}"
+            0 -> "${imageId(group!!.images.indexOf(first))} ↔ ${imageId(group!!.images.indexOf(second))}"
+            1 -> if (dimensions(a, first) == dimensions(b, second)) dimensions(a, first) else "${dimensions(a, first)} → ${dimensions(b, second)}"
             2 -> if (a.colorText == b.colorText) a.colorText else "${a.colorText} → ${b.colorText}"
-            else -> group?.matchesByPair?.get(setOf(a.path, b.path))?.description ?: if (isDensityVariant(a, b)) "Standard density variants · Excluded" else "No direct match under current filters"
+            else -> match?.description ?: "No direct match under current filters"
         }
     }
 }

@@ -8,7 +8,7 @@ Install the ZIP from **Settings → Plugins → ⚙ → Install Plugin from Disk
 
 By default, only identical files or decoded pixels are listed. Enable **Include different dimensions** or **Include different Tint** to broaden the search. Both must be enabled for pairs that differ in both dimensions and Tint.
 
-Normal density variants of the same resource (same resource root, name, folder type, and non-density qualifiers) are excluded. For example, `drawable-hdpi/icon.png` and `drawable-xhdpi/icon.png` in the same source set are not duplicates. Same-named files in different modules are still compared.
+Normal density variants of the same resource (same resource root, name, folder type, and non-density qualifiers) are excluded. For example, `drawable-hdpi/icon.png` and `drawable-xhdpi/icon.png` in the same source set are not duplicates. When matching another resource, density variants share one card; use the density selector to inspect each original file. The pair table shows the strongest actual match and its density, rather than treating normal DPI differences as separate duplicates. Same-named files in different modules are still compared.
 
 Select a group to compare thumbnails, original dimensions, file paths, and HEX colors. The pair table checks each relationship independently; belonging to the same group does not imply that every pair matches. Select a card to open its file, copy its path, or access native IDE actions.
 
