@@ -8,9 +8,13 @@ Install the ZIP from **Settings → Plugins → ⚙ → Install Plugin from Disk
 
 By default, only identical files or decoded pixels are listed. Enable **Include different dimensions** or **Include different Tint** to broaden the search. Both must be enabled for pairs that differ in both dimensions and Tint.
 
+Normal density variants of the same resource (same resource root, name, folder type, and non-density qualifiers) are excluded. For example, `drawable-hdpi/icon.png` and `drawable-xhdpi/icon.png` in the same source set are not duplicates. Same-named files in different modules are still compared.
+
 Select a group to compare thumbnails, original dimensions, file paths, and HEX colors. The pair table checks each relationship independently; belonging to the same group does not imply that every pair matches. Select a card to open its file, copy its path, or access native IDE actions.
 
-**Auto-check changes** is enabled by default. Saved changes detected by the IDE trigger a debounced background scan, reusing cached image fingerprints. New matching pairs produce a notification with a **View matches** action. The initial scan is silent. Settings are remembered per project.
+Scans run in the background. The status bar shows the current stage, discovered image count, and percentage while reading images or comparing pairs. **Cancel** stops the scan and keeps previous results. Progress updates do not rebuild the result list.
+
+**Auto-check changes** is enabled by default. Saved changes detected by the IDE trigger a debounced background scan, reusing cached image fingerprints. Copying an image to a new filename also triggers auto-check. New matching pairs produce a notification with a **View matches** action. The initial scan is silent. Settings are remembered per project.
 
 ## Scope
 
@@ -32,6 +36,6 @@ Requires JDK 21 and Android Studio based on IntelliJ Platform 261 or later with 
 ./gradlew buildPlugin -PstudioPath="/path/to/Android Studio.app"
 ```
 
-The installable ZIP is in `build/distributions/`. Checks cover exact copies, size and Tint combinations, filtering, non-transitive relationships, transparent pixels, malformed images, and static WebP decoding.
+Run `./gradlew runIde` to test in an isolated Android Studio sandbox with the plugin loaded. The installable ZIP is in `build/distributions/`. Checks cover exact copies, size and Tint combinations, filtering, non-transitive relationships, transparent pixels, malformed images, and static WebP decoding.
 
 Apache License 2.0. Build setup adapted from [Animated WebP Viewer](https://github.com/dev-weiqi/animated-webp-viewer).

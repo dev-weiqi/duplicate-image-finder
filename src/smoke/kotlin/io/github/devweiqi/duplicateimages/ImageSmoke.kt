@@ -82,6 +82,27 @@ private fun runChecks() {
         check(!MatchOptions(dimensions = true).accepts(bc))
         check(!MatchOptions(tint = true).accepts(bc))
         check(MatchOptions(true, true).accepts(bc))
+        val resourceRoot = directory.resolve("shared/src/commonMain/composeResources")
+        val hdpi = a.copy(path = resourceRoot.resolve("drawable-hdpi/icon.png"))
+        val xhdpi = b.copy(path = resourceRoot.resolve("drawable-xhdpi/icon.png"))
+        check(isDensityVariant(hdpi, xhdpi))
+        check(compareAll(listOf(hdpi, xhdpi), MatchOptions(true, true)).groups.isEmpty())
+        check(compareAll(listOf(hdpi, xhdpi.copy(fileHash = hdpi.fileHash, pixelHash = hdpi.pixelHash))).groups.isEmpty())
+        check(!isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("drawable-xhdpi/other.png"))))
+        check(!isDensityVariant(hdpi, xhdpi.copy(path = directory.resolve("feature/src/commonMain/composeResources/drawable-xhdpi/icon.png"))))
+        check(!isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("drawable-night-xhdpi/icon.png"))))
+        check(!isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("mipmap-xhdpi/icon.png"))))
+        check(isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("drawable/icon.png"))))
+        check(isDensityVariant(hdpi.copy(path = directory.resolve("app/src/main/res/drawable-hdpi/icon.png")), xhdpi.copy(path = directory.resolve("app/src/main/res/drawable-480dpi/icon.webp"))))
+        check(!isDensityVariant(a.copy(path = directory.resolve("photos/icon.png")), b.copy(path = directory.resolve("photos/large/icon.png"))))
+        val progressValues = mutableListOf<Pair<Long, Long>>()
+        compareAll(all, MatchOptions(true, true), progress = { done, total -> progressValues.add(done to total) })
+        check(progressValues.first() == 0L to 10L && progressValues.last() == 10L to 10L)
+        check(progressValues.zipWithNext().all { (a, b) -> a.first <= b.first })
+        check(ScanProgress("Compare", 1, 4).percent == 25)
+        check(ScanProgress("Find", 5).percent == null)
+        check(ScanProgress("Empty", 0, 0).percent == 100)
+        println("Density variants excluded only within the same resource family; comparison progress is monotonic: OK")
         checkPanel(both)
         println("Exact copies, size, Tint, combined differences, HEX colors, negatives and all four filter combinations: OK")
 
@@ -180,6 +201,7 @@ private fun checkPanel(group: ImageGroup) {
         javax.swing.SwingUtilities.invokeAndWait {
             com.intellij.ui.IconManager.activate(com.intellij.ui.icons.CoreIconManager())
             val service = ImageScanService(project)
+            checkExecutorCancellation(service)
             com.intellij.openapi.util.Disposer.register(lifetime, service)
             ImageScanService::class.java.getDeclaredField("snapshot").apply { isAccessible = true }
                 .set(service, ScanSnapshot(listOf(group), group.images.size, message = "Smoke check"))
@@ -218,6 +240,81 @@ private fun checkPanel(group: ImageGroup) {
                 ImageIO.write(image, "png", Path.of("build/panel-smoke.png").toFile())
                 val goldPixels = (0 until image.height).sumOf { y -> (0 until image.width).count { x -> image.getRGB(x, y) and 0xffffff == 0xe5bb65 } }
                 check(goldPixels > 500) { "Image cards rendered blank: only $goldPixels gold pixels" }
+                val largeImages = List(64) { group.images.first().copy(path = Path.of("/sample/image$it.png")) }
+                val large = compareAll(largeImages).groups.single()
+                val snapshotField = ImageScanService::class.java.getDeclaredField("snapshot").apply { isAccessible = true }
+                var updates = 0
+                table.model.addTableModelListener { updates++ }
+                snapshotField.set(service, ScanSnapshot(listOf(large), 64))
+                val started = System.nanoTime()
+                service.listeners.forEach { it() }
+                println("Large group: ${table.rowCount} rows, $updates model events, ${(System.nanoTime() - started) / 1_000_000} ms on EDT")
+                check(updates <= 2) { "Large group emits $updates table events instead of a batch update" }
+                updates = 0
+                snapshotField.set(service, service.snapshot.copy(scanning = true, message = "Checking…"))
+                service.listeners.forEach { it() }
+                check(updates == 0) { "Starting a background scan rebuilt the old results on EDT" }
+                snapshotField.set(service, service.snapshot.copy(progress = ScanProgress("Comparing pairs", 20, 100)))
+                service.listeners.forEach { it() }
+                val progress = components(panel).filterIsInstance<javax.swing.JProgressBar>().single()
+                check(progress.isVisible && !progress.isIndeterminate && progress.value == 20)
+                val cancel = components(panel).filterIsInstance<javax.swing.JButton>().single { it.text == "Cancel" }
+                check(cancel.isVisible)
+                cancel.doClick(0)
+                check(!service.snapshot.scanning && !progress.isVisible && !cancel.isVisible)
+                check(table.rowCount == 2016 && updates == 0) { "Cancel must preserve previous results" }
+                val root = group.images.first().path.parent
+                ImageScanService::class.java.getDeclaredField("roots").apply { isAccessible = true }.set(service, listOf(root))
+                service.setAutoCheck(false)
+                val source = checkNotNull(environment.localFileSystem.findFileByPath(group.images.first().path.toString()))
+                val destination = root.resolve("new-copy.png")
+                Files.copy(group.images.first().path, destination)
+                environment.application.messageBus.syncPublisher(com.intellij.openapi.vfs.VirtualFileManager.VFS_CHANGES).after(
+                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, source.parent, "new-copy.png"))
+                )
+                val changed = ImageScanService::class.java.getDeclaredField("invalidated").apply { isAccessible = true }.get(service) as Set<*>
+                check(destination in changed) { "Copy event was not delivered to the project listener" }
+                val debounce = ImageScanService::class.java.getDeclaredField("timer").apply { isAccessible = true }.get(service) as javax.swing.Timer
+                check(!debounce.isRunning) { "Auto-check off should not schedule a scan" }
+                ImageScanService::class.java.getDeclaredField("autoCheck").apply { isAccessible = true }.set(service, true)
+                environment.application.messageBus.syncPublisher(com.intellij.openapi.vfs.VirtualFileManager.VFS_CHANGES).after(
+                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, source.parent, "new-copy.png"))
+                )
+                check(debounce.isRunning) { "A copied image must schedule auto-check" }
+                service.cancelScan()
+
+                val newImage = readImage(destination)
+                val old = compareAll(group.images)
+                val copied = compareAll(group.images + newImage)
+                val newMatches = newlyMatchedPairs(copied.groups, old.groups.flatMap { it.matches }.mapTo(mutableSetOf()) { it.key })
+                check(newMatches.isNotEmpty() && newMatches.all { it.first.path == destination || it.second.path == destination })
+                check(newlyMatchedPairs(copied.groups, copied.groups.flatMap { it.matches }.mapTo(mutableSetOf()) { it.key }).isEmpty())
+                println("Real VFS copy event reaches listener; copied file creates new notification matches without repeat alerts: OK")
+                val resultList = components(panel).filterIsInstance<javax.swing.JList<*>>().single { it.accessibleContext.accessibleName == "Matching image groups" }
+                var listUpdates = 0
+                resultList.model.addListDataListener(object : javax.swing.event.ListDataListener {
+                    override fun intervalAdded(e: javax.swing.event.ListDataEvent) {
+                        listUpdates++
+                    }
+
+                    override fun intervalRemoved(e: javax.swing.event.ListDataEvent) {
+                        listUpdates++
+                    }
+
+                    override fun contentsChanged(e: javax.swing.event.ListDataEvent) {
+                        listUpdates++
+                    }
+                })
+                val manyGroups = List(500) { i ->
+                    val a = group.images.first().copy(path = Path.of("/sample/$i/a.png"))
+                    val b = a.copy(path = Path.of("/sample/$i/b.png"))
+                    ImageGroup(listOf(a, b), listOf(ImageMatch(a, b, true, false, false)))
+                }
+                snapshotField.set(service, ScanSnapshot(manyGroups, 1000))
+                service.listeners.forEach { it() }
+                check(resultList.model.size == 500 && listUpdates <= 2) { "Group list was updated $listUpdates times" }
+                check(resultList.fixedCellHeight > 0 && resultList.fixedCellWidth > 0)
+                println("500 groups are published with $listUpdates list events and fixed row metrics: OK")
             } finally {
                 panel.dispose()
             }
@@ -275,5 +372,31 @@ private class MemoryProperties : com.intellij.ide.util.PropertiesComponent() {
         val changed = getBoolean(name) != value
         setValue(name, value)
         return changed
+    }
+}
+
+private fun checkExecutorCancellation(service: ImageScanService) {
+    val executor = ImageScanService::class.java.getDeclaredField("executor").apply { isAccessible = true }.get(service) as java.util.concurrent.ExecutorService
+    val started = java.util.concurrent.CountDownLatch(1)
+    val finish = java.util.concurrent.CountDownLatch(1)
+    try {
+        val first = executor.submit {
+            started.countDown()
+            try {
+                finish.await()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        check(started.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        val next = executor.submit<Boolean> { Thread.currentThread().isInterrupted }
+        ImageScanService::class.java.getDeclaredField("task").apply { isAccessible = true }.set(service, first)
+        service.cancelScan()
+        finish.countDown()
+        val interrupted = next.get(2, java.util.concurrent.TimeUnit.SECONDS)
+        println("Queued scan inherits cancelled worker interrupt: $interrupted")
+        check(!interrupted) { "Cancellation prevents the next queued scan from running" }
+    } finally {
+        finish.countDown()
     }
 }

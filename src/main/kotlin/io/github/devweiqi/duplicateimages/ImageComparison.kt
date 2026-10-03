@@ -31,8 +31,33 @@ data class ImageEntry(
     val monochrome: Boolean,
     val visible: Boolean,
 ) {
-    val dimensions: String get() = "$width × $height"
-    val colorText: String get() = colors.joinToString(" / ") { hexColor(it) }
+    val densityVariant = densityVariant(path)
+    val dimensions: String = "$width × $height"
+    val colorText: String = colors.joinToString(" / ") { hexColor(it) }
+}
+
+data class DensityVariant(val root: Path, val name: String, val folder: String, val qualifiers: List<String>, val density: String)
+
+private fun densityVariant(path: Path): DensityVariant? {
+    val folder = path.parent ?: return null
+    val root = folder.parent ?: return null
+    if (root.fileName?.toString() !in setOf("res", "composeResources")) return null
+    val parts = folder.fileName.toString().split('-')
+    if (parts.first() !in setOf("drawable", "mipmap")) return null
+    val densities = setOf("ldpi", "mdpi", "tvdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+    val qualifiers = parts.drop(1)
+    val density = qualifiers.firstOrNull { it in densities || it.matches(Regex("[0-9]+dpi")) }
+    return DensityVariant(root, path.fileName.toString().substringBeforeLast('.'), parts.first(), qualifiers.filter { it != density }, density ?: "default")
+}
+
+fun isDensityVariant(a: ImageEntry, b: ImageEntry): Boolean {
+    val first = a.densityVariant ?: return false
+    val second = b.densityVariant ?: return false
+    return first.root == second.root &&
+        first.name == second.name &&
+        first.folder == second.folder &&
+        first.qualifiers == second.qualifiers &&
+        first.density != second.density
 }
 
 fun hexColor(rgb: Int): String = "#%06X".format(rgb and 0xffffff)
@@ -54,13 +79,15 @@ data class ImageMatch(
                 first.pixelHash == second.pixelHash -> "Identical pixels"
                 else -> "Similar pixels · Suggested"
             }
-    val key: String get() = listOf(first.path.toString(), second.path.toString()).sorted().joinToString("\u0000") + "\u0000" + description
+    val key: String = listOf(first.path.toString(), second.path.toString()).sorted().joinToString("\u0000") + "\u0000" + description
 }
 
 data class ImageGroup(
     val images: List<ImageEntry>,
     val matches: List<ImageMatch>,
-)
+) {
+    val matchesByPair = matches.associateBy { setOf(it.first.path, it.second.path) }
+}
 
 data class ComparisonResult(
     val groups: List<ImageGroup>,
@@ -249,6 +276,7 @@ data class MatchOptions(
 fun compareAll(
     images: List<ImageEntry>,
     options: MatchOptions = MatchOptions(),
+    progress: (Long, Long) -> Unit = { _, _ -> },
     cancelled: () -> Unit = {},
 ): ComparisonResult {
     val parents = IntArray(images.size) { it }
@@ -263,10 +291,16 @@ fun compareAll(
     }
     val matches = mutableListOf<ImageMatch>()
     var limited = false
+    val total = images.size.toLong() * (images.size - 1) / 2
+    var completed = 0L
+    progress(0, total)
     outer@ for (i in images.indices) {
         cancelled()
+        progress(completed, total)
         for (j in i + 1 until images.size) {
             if (j % 64 == 0) cancelled()
+            completed++
+            if (isDensityVariant(images[i], images[j])) continue
             if (!options.dimensions && !options.tint && images[i].fileHash != images[j].fileHash && images[i].pixelHash != images[j].pixelHash) continue
             val match = compareImages(images[i], images[j]) ?: continue
             if (!options.accepts(match)) continue
@@ -278,6 +312,7 @@ fun compareAll(
             parents[root(j)] = root(i)
         }
     }
+    progress(completed, total)
     val byRoot = images.indices.groupBy { root(it) }
     val index = images.withIndex().associate { it.value.path to it.index }
     val edges = matches.groupBy { root(index.getValue(it.first.path)) }

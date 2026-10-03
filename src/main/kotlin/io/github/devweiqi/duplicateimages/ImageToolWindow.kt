@@ -42,10 +42,11 @@ import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JProgressBar
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
-import javax.swing.table.DefaultTableModel
+import javax.swing.table.AbstractTableModel
 
 class ImageToolWindowFactory :
     ToolWindowFactory,
@@ -74,13 +75,7 @@ class ImagePanel(
     private val groups = JBList(groupModel)
     private val imageModel = DefaultListModel<ImageEntry>()
     private val images = JBList(imageModel)
-    private val tableModel =
-        object : DefaultTableModel(arrayOf("Images", "Dimensions", "Tint / Main colors (HEX)", "Result"), 0) {
-            override fun isCellEditable(
-                row: Int,
-                column: Int,
-            ): Boolean = false
-        }
+    private val tableModel = PairTableModel()
     private val table = object : JBTable(tableModel) {
         override fun getToolTipText(event: java.awt.event.MouseEvent): String? {
             val row = rowAtPoint(event.point)
@@ -97,12 +92,18 @@ class ImagePanel(
     private val auto = JBCheckBox("Auto-check changes", service.autoCheck)
     private val scan = JButton("Scan images")
     private val issues = JButton("Scan issues")
+    private val cancel = JButton("Cancel")
+    private val progress = JProgressBar(0, 100).apply {
+        preferredSize = JBUI.size(160, 20)
+        isStringPainted = true
+        accessibleContext.accessibleName = "Image scan progress"
+    }
+    private var displayedGroups: List<ImageGroup>? = null
     private val open = JButton("Open file")
     private val copy = JButton("Copy path")
     private val actions = JButton("IDE actions…")
     private var updating = false
     private var current: ImageGroup? = null
-    private var shownPairs = emptyList<Pair<ImageEntry, ImageEntry>>()
     private val listener: () -> Unit = { refresh() }
 
     init {
@@ -110,6 +111,7 @@ class ImagePanel(
         val controls =
             JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(8), JBUI.scale(4))).apply {
                 add(scan)
+                add(cancel)
                 add(auto)
             }
         controls.toolTipText =
@@ -132,7 +134,10 @@ class ImagePanel(
                 override fun textChanged(event: DocumentEvent) = filterGroups()
             },
         )
+        groups.accessibleContext.accessibleName = "Matching image groups"
         groups.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        groups.fixedCellHeight = JBUI.scale(70)
+        groups.fixedCellWidth = JBUI.scale(260)
         groups.emptyText.text = "No matches for the current filters"
         groups.cellRenderer = GroupRenderer()
         groups.addListSelectionListener { if (!it.valueIsAdjusting && !updating) showGroup(groups.selectedValue) }
@@ -194,8 +199,8 @@ class ImagePanel(
         table.columnModel.getColumn(2).preferredWidth = JBUI.scale(230)
         table.columnModel.getColumn(3).preferredWidth = JBUI.scale(250)
         table.selectionModel.addListSelectionListener {
-            if (!it.valueIsAdjusting && table.selectedRow in shownPairs.indices) {
-                val pair = shownPairs[table.selectedRow]
+            if (!it.valueIsAdjusting && table.selectedRow in tableModel.pairs.indices) {
+                val pair = tableModel.pairs[table.selectedRow]
                 val entries = current?.images.orEmpty()
                 images.selectedIndices = intArrayOf(entries.indexOf(pair.first), entries.indexOf(pair.second))
             }
@@ -234,10 +239,17 @@ class ImagePanel(
         val bottom =
             JPanel(BorderLayout()).apply {
                 add(status, BorderLayout.CENTER)
-                add(issues, BorderLayout.EAST)
+                add(
+                    JPanel(FlowLayout(FlowLayout.TRAILING, JBUI.scale(8), 0)).apply {
+                        add(progress)
+                        add(issues)
+                    },
+                    BorderLayout.EAST
+                )
             }
         add(bottom, BorderLayout.SOUTH)
         scan.addActionListener { service.scan() }
+        cancel.addActionListener { service.cancelScan() }
         dimensions.addActionListener { service.setOptions(dimensions.isSelected, tint.isSelected) }
         tint.addActionListener { service.setOptions(dimensions.isSelected, tint.isSelected) }
         auto.addActionListener { service.setAutoCheck(auto.isSelected) }
@@ -276,7 +288,15 @@ class ImagePanel(
         status.text = snapshot.message
         scan.isEnabled = !snapshot.scanning
         issues.isVisible = snapshot.issues.isNotEmpty()
-        filterGroups()
+        cancel.isVisible = snapshot.scanning
+        progress.isVisible = snapshot.scanning
+        progress.isIndeterminate = snapshot.progress?.total == null
+        progress.value = snapshot.progress?.percent ?: 0
+        progress.string = snapshot.progress?.percent?.let { "$it%" } ?: "Finding images…"
+        if (displayedGroups !== snapshot.groups || service.focusPath != null) {
+            displayedGroups = snapshot.groups
+            filterGroups()
+        }
     }
 
     private fun filterGroups() {
@@ -288,10 +308,11 @@ class ImagePanel(
         val query = if (service.focusPath != null) "" else search.text.trim()
         updating = true
         groupModel.clear()
-        service.snapshot.groups
-            .filter { group ->
+        groupModel.addAll(
+            service.snapshot.groups.filter { group ->
                 group.images.any { it.path.toString().contains(query, ignoreCase = true) }
-            }.forEach(groupModel::addElement)
+            }
+        )
         val index =
             (0 until groupModel.size()).firstOrNull { i -> groupModel[i].images.any { it.path == selectedPath } }
                 ?: if (groupModel.isEmpty) -1 else 0
@@ -302,10 +323,10 @@ class ImagePanel(
     }
 
     private fun showGroup(group: ImageGroup?) {
+        if (group != null && current === group) return
         current = group
         imageModel.clear()
-        tableModel.rowCount = 0
-        shownPairs = emptyList()
+        tableModel.showGroup(group)
         heading.text =
             if (group ==
                 null
@@ -319,35 +340,8 @@ class ImagePanel(
             return
         }
         // Only the pair table is capped; all images remain available in the card list.
-        group.images.forEach(imageModel::addElement)
+        imageModel.addAll(group.images)
         images.selectedIndex = 0
-        val pairs = mutableListOf<Pair<ImageEntry, ImageEntry>>()
-        val matchByPair = group.matches.associateBy { setOf(it.first.path, it.second.path) }
-        val rows = minOf(group.images.size, 64)
-        for (i in 0 until rows) {
-            for (j in i + 1 until rows) {
-                val a = group.images[i]
-                val b = group.images[j]
-                val match = matchByPair[setOf(a.path, b.path)]
-                val colorText = if (a.colorText == b.colorText) a.colorText else "${a.colorText} → ${b.colorText}"
-                tableModel.addRow(
-                    arrayOf(
-                        "${imageId(i)} ↔ ${imageId(j)}",
-                        if (a.dimensions ==
-                            b.dimensions
-                        ) {
-                            a.dimensions
-                        } else {
-                            "${a.dimensions} → ${b.dimensions}"
-                        },
-                        colorText,
-                        match?.description ?: "No direct match under current filters",
-                    ),
-                )
-                pairs.add(a to b)
-            }
-        }
-        shownPairs = pairs
         if (group.images.size > 64) heading.text += " · Pair table limited to first 64 images"
     }
 
@@ -459,8 +453,7 @@ private class ImageRenderer(
                     add(textLabel("${image.dimensions} · ${"%.1f".format(image.bytes / 1024.0)} KB"))
                     add(
                         textLabel(
-                            image.path.parent.fileName
-                                .toString(),
+                            sourceLabel(image.path),
                         ).apply { foreground = JBColor.GRAY },
                     )
                     add(
@@ -556,4 +549,36 @@ private fun sourceLabel(path: Path): String {
     val parts = path.map { it.toString() }
     val src = parts.indexOfLast { it == "src" }
     return if (src > 0 && src + 1 < parts.size) "${parts[src - 1]}.${parts[src + 1]}" else path.parent.fileName.toString()
+}
+
+private class PairTableModel : AbstractTableModel() {
+    private val columns = arrayOf("Images", "Dimensions", "Tint / Main colors (HEX)", "Result")
+    private var group: ImageGroup? = null
+    var pairs = emptyList<Pair<ImageEntry, ImageEntry>>()
+        private set
+
+    fun showGroup(value: ImageGroup?) {
+        group = value
+        val images = value?.images.orEmpty().take(64)
+        pairs = buildList {
+            for (i in images.indices) for (j in i + 1 until images.size) add(images[i] to images[j])
+        }
+        fireTableDataChanged()
+    }
+
+    override fun getRowCount(): Int = pairs.size
+
+    override fun getColumnCount(): Int = columns.size
+
+    override fun getColumnName(column: Int): String = columns[column]
+
+    override fun getValueAt(row: Int, column: Int): Any {
+        val (a, b) = pairs[row]
+        return when (column) {
+            0 -> "${imageId(group!!.images.indexOf(a))} ↔ ${imageId(group!!.images.indexOf(b))}"
+            1 -> if (a.dimensions == b.dimensions) a.dimensions else "${a.dimensions} → ${b.dimensions}"
+            2 -> if (a.colorText == b.colorText) a.colorText else "${a.colorText} → ${b.colorText}"
+            else -> group?.matchesByPair?.get(setOf(a.path, b.path))?.description ?: if (isDensityVariant(a, b)) "Standard density variants · Excluded" else "No direct match under current filters"
+        }
+    }
 }
