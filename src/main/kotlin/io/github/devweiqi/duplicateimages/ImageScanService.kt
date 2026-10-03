@@ -358,9 +358,9 @@ class ImageScanService(
             .getInstance()
             .getNotificationGroup(TOOL_WINDOW)
             .createNotification(
-                "Image matches found",
+                "Possible duplicate images found",
                 "${matches.size} new matching pairs. Review dimensions and HEX colors before changing resources.",
-                NotificationType.INFORMATION,
+                NotificationType.WARNING,
             ).addAction(
                 NotificationAction.createSimpleExpiring("View matches") {
                     focusPath = matches.first().first.path
