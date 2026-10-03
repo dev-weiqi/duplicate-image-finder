@@ -39,12 +39,17 @@ private val FORMATS = setOf("png", "jpg", "jpeg", "webp")
 
 fun isImagePath(path: Path): Boolean = path.extension.lowercase() in FORMATS
 
+fun isResourceImagePath(path: Path): Boolean = isImagePath(path) &&
+    (0 until path.nameCount - 3).any { index ->
+        path.getName(index).toString() == "src" && path.getName(index + 2).toString() in setOf("res", "composeResources")
+    }
+
 fun isScanPath(
     path: Path,
     roots: List<Path>,
 ): Boolean =
     roots.any { root ->
-        path.startsWith(root) && root.relativize(path).none { it.toString().startsWith(".") || it.toString() in EXCLUDED }
+        path.startsWith(root) && root.relativize(path).none { it.toString().startsWith(".") || it.toString() in EXCLUDED || it.toString().endsWith(".xcassets") }
     }
 
 data class ScanProgress(val phase: String, val completed: Long, val total: Long? = null) {
@@ -128,7 +133,7 @@ class ImageScanService(
                                     else -> listOf(event.path)
                                 }
                             }.mapNotNull { runCatching { Path.of(it).normalize() }.getOrNull() }
-                            .filter { isScanPath(it, roots) }
+                            .filter { isScanPath(it, roots) && (!isImagePath(it) || isResourceImagePath(it)) }
                     if (paths.isEmpty()) return
                     // Directories also matter: a rename or deletion can affect an entire image subtree.
                     invalidated.addAll(paths)
@@ -247,7 +252,7 @@ class ImageScanService(
                                     attrs: BasicFileAttributes,
                                 ): FileVisitResult {
                                     checkCancelled()
-                                    if (attrs.isRegularFile && isImagePath(file) && isScanPath(file, scanRoots)) files.add(file)
+                                    if (attrs.isRegularFile && isResourceImagePath(file) && isScanPath(file, scanRoots)) files.add(file)
                                     report("Finding images", files.size.toLong())
                                     if (++visits > 100_000 || files.size >= MAX_IMAGES) {
                                         limited = true

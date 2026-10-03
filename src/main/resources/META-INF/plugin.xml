@@ -3,7 +3,7 @@
     <name>Duplicate Image Finder</name>
     <vendor email="dev.weiqi@gmail.com" url="https://github.com/dev-weiqi">dev-weiqi</vendor>
     <description><![CDATA[
-        <p>Find identical and similar static PNG, JPEG, and WebP images across project modules.</p>
+        <p>Find identical and similar static PNG, JPEG, and WebP images in Android and Compose Multiplatform resource directories.</p>
         <p>Compare images side by side, inspect dimensions, paths, HEX colors, and pairwise differences.
         Discover resized copies and differently tinted monochrome artwork, including combinations of both.</p>
         <p>Automatically check saved image changes and notify you of new matches. Visual matches are suggestions, not deletion recommendations. No files are modified.</p>

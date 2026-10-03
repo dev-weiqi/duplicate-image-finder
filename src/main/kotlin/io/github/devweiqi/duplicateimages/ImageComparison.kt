@@ -251,12 +251,18 @@ fun compareImages(
     val aspectRatio = (a.width.toDouble() / a.height) / (b.width.toDouble() / b.height)
     if (!a.visible || !b.visible || abs(1 - aspectRatio) > 0.02 || java.lang.Long.bitCount(a.shape xor b.shape) > 8) return null
     if (!(a.monochrome && b.monochrome) && java.lang.Long.bitCount(a.texture xor b.texture) > 8) return null
+    val localAlphaError = DoubleArray(64)
+    val localCoverage = DoubleArray(64)
     var alphaError = 0.0
     var colorError = 0.0
     var coverage = 0.0
     for (i in a.samples.indices step 4) {
         val aa = a.samples[i]
         val ba = b.samples[i]
+        val pixel = i / 4
+        val tile = pixel / SAMPLE / 4 * 8 + pixel % SAMPLE / 4
+        localAlphaError[tile] += abs(aa - ba)
+        localCoverage[tile] += maxOf(aa, ba)
         alphaError += abs(aa - ba)
         coverage += maxOf(aa, ba)
         for (channel in 1..3) {
@@ -265,6 +271,8 @@ fun compareImages(
         }
     }
     if (coverage < 1 || alphaError / coverage > 0.065) return null
+    // Shared backgrounds must not hide different internal cutouts, such as ! and ?.
+    if (localCoverage.indices.any { localCoverage[it] >= 4 && localAlphaError[it] / localCoverage[it] > 0.25 }) return null
     val sameColor = colorError / (coverage * 3) <= 0.0025
     // Tint-invariant matching is deliberately limited to monochrome artwork.
     if (!sameColor && !(a.monochrome && b.monochrome)) return null

@@ -1,6 +1,6 @@
 # Duplicate Image Finder
 
-An Android Studio plugin for finding identical and similar static images across project modules.
+An Android Studio plugin for finding identical and similar static images in Android and Compose Multiplatform resource directories.
 
 ![Duplicate Image Finder showing density variants, identical images, size differences, and HEX Tint comparisons](docs/preview.png)
 
@@ -23,12 +23,12 @@ Scans run in the background. The status bar shows the current stage, discovered 
 ## Scope
 
 * Static PNG, JPEG, and WebP. Animated images and vector XML/SVG are not supported yet.
-* Resized copies are heuristic matches; differently tinted **monochrome artwork** is compared by shape. Arbitrary photo recoloring, rotations, and crops are not detected reliably.
+* Resized copies are heuristic matches with local transparency checks to distinguish internal cutouts; differently tinted **monochrome artwork** is compared by shape. Arbitrary photo recoloring, rotations, and crops are not detected reliably.
 * Tint is shown as HEX with color swatches. Multicolor images show up to three main colors instead of a single Tint.
 * Images can intentionally differ for density, accessibility, or small-size artwork. Results are suggestions, never deletion recommendations. This plugin does not modify files.
 * Native Find Usages depends on the IDE's support for the selected file; generated Compose references may not be resolved.
 
-Project content roots are scanned, excluding IDE-excluded roots, hidden directories, build output, and common dependency directories. Limits: 2,000 images, 100,000 filesystem entries, 20,000 matching pairs, 32 MiB per image, and 16 million decoded pixels. The pair table shows the first 64 images of a large group. Limits and unreadable or unsupported images are reported under **Scan issues**.
+Only images under `src/*/res/` and `src/*/composeResources/` are scanned across project modules. iOS asset catalogs, documentation images, IDE-excluded roots, hidden directories, build output, and common dependency directories are excluded. Limits: 2,000 images, 100,000 filesystem entries, 20,000 matching pairs, 32 MiB per image, and 16 million decoded pixels. The pair table shows the first 64 images of a large group. Limits and unreadable or unsupported images are reported under **Scan issues**.
 
 ## Build
 

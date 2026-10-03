@@ -49,6 +49,43 @@ private fun runChecks() {
             ImageIO.write(image, "png", file.toFile())
             return readImage(file)
         }
+        System.getenv("CHECK_RESOURCE_ROOT")?.let { resourceRoot ->
+            WebpMetadata.ensureWebpRegistered()
+            val originals = Files.walk(Path.of(resourceRoot)).use { paths ->
+                paths.filter { it.fileName.toString() in setOf("ic_danger.webp", "ic_question_circle.webp") }.map(::readImage).toList()
+            }
+            check(originals.size == 10)
+            val found = compareAll(originals, MatchOptions(true, true))
+            println("Original symbol images: ${found.groups.size} groups, ${found.groups.sumOf { it.matches.size }} false matches")
+            check(found.groups.isEmpty()) { "Different punctuation symbols must not match across any densities" }
+        }
+
+        fun symbol(name: String, question: Boolean, size: Int, color: Int = 0x1a1616): ImageEntry {
+            val image = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+            image.createGraphics().apply {
+                scale(size / 48.0, size / 48.0)
+                setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                this.color = Color(color)
+                fillOval(2, 2, 44, 44)
+                composite = java.awt.AlphaComposite.Clear
+                fillRect(22, 32, 4, 4)
+                if (question) {
+                    fillRect(20, 14, 8, 3)
+                    fillRect(25, 17, 3, 6)
+                    fillRect(22, 21, 6, 3)
+                    fillRect(22, 24, 3, 5)
+                } else {
+                    fillRect(22, 14, 3, 15)
+                }
+                dispose()
+            }
+            return describeImage(directory.resolve(name), name.toByteArray(), image)
+        }
+        val warning = symbol("warning.png", false, 48)
+        val question = symbol("question.png", true, 72)
+        check(compareAll(listOf(warning, question), MatchOptions(true, true)).groups.isEmpty()) { "A shared circular background cannot hide different internal symbols" }
+        check(compareImages(warning, symbol("warning-large.png", false, 96)) != null)
+        check(compareImages(warning, symbol("warning-tint.png", false, 48, 0x88aafa))?.tinted == true)
         val a = entry("a.png")
         val b = entry("b.png", size = 192)
         val c = entry("c.png", color = 0x88aafa)
@@ -190,6 +227,11 @@ private fun runChecks() {
         check(!isImagePath(Path.of("vector.xml")))
         check(isScanPath(directory.resolve("shared/src/commonMain/composeResources/drawable/image.png"), listOf(directory)))
         check(!isScanPath(directory.resolve("build/image.png"), listOf(directory)))
+        check(!isResourceImagePath(directory.resolve("iosApp/Assets.xcassets/AppIcon.appiconset/icon.png")))
+        check(!isResourceImagePath(directory.resolve("docs/preview.png")))
+        check(!isResourceImagePath(directory.resolve("shared/src/commonMain/kotlin/icon.png")))
+        check(isResourceImagePath(directory.resolve("shared/src/commonMain/composeResources/drawable/icon.webp")))
+        check(isResourceImagePath(directory.resolve("app/src/debug/res/drawable/icon.png")))
         check(!isScanPath(directory.resolve(".git/image.png"), listOf(directory)))
         check(!isScanPath(directory.resolveSibling("elsewhere/image.png"), listOf(directory)))
         println("Real PNG/JPEG/WebP decoding, malformed/oversized/animated files and scan path exclusions: OK")
@@ -272,13 +314,15 @@ private fun checkPanel(group: ImageGroup) {
                 check(!service.snapshot.scanning && !progress.isVisible && !cancel.isVisible)
                 check(table.rowCount == 2016 && updates == 0) { "Cancel must preserve previous results" }
                 val root = group.images.first().path.parent
+                val resourceDirectory = Files.createDirectories(root.resolve("shared/src/commonMain/composeResources/drawable"))
                 ImageScanService::class.java.getDeclaredField("roots").apply { isAccessible = true }.set(service, listOf(root))
                 service.setAutoCheck(false)
                 val source = checkNotNull(environment.localFileSystem.findFileByPath(group.images.first().path.toString()))
-                val destination = root.resolve("new-copy.png")
+                val destination = resourceDirectory.resolve("new-copy.png")
+                val destinationParent = checkNotNull(environment.localFileSystem.findFileByPath(resourceDirectory.toString()))
                 Files.copy(group.images.first().path, destination)
                 environment.application.messageBus.syncPublisher(com.intellij.openapi.vfs.VirtualFileManager.VFS_CHANGES).after(
-                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, source.parent, "new-copy.png"))
+                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, destinationParent, "new-copy.png"))
                 )
                 val changed = ImageScanService::class.java.getDeclaredField("invalidated").apply { isAccessible = true }.get(service) as Set<*>
                 check(destination in changed) { "Copy event was not delivered to the project listener" }
@@ -286,7 +330,7 @@ private fun checkPanel(group: ImageGroup) {
                 check(!debounce.isRunning) { "Auto-check off should not schedule a scan" }
                 ImageScanService::class.java.getDeclaredField("autoCheck").apply { isAccessible = true }.set(service, true)
                 environment.application.messageBus.syncPublisher(com.intellij.openapi.vfs.VirtualFileManager.VFS_CHANGES).after(
-                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, source.parent, "new-copy.png"))
+                    listOf(com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent(null, source, destinationParent, "new-copy.png"))
                 )
                 check(debounce.isRunning) { "A copied image must schedule auto-check" }
                 service.cancelScan()
