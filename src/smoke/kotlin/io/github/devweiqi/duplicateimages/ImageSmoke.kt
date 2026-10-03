@@ -351,6 +351,7 @@ private fun checkPanel(group: ImageGroup) {
                 }
                 ImageIO.write(densityPreview, "png", Path.of("build/density-panel-smoke.png").toFile())
                 println("Density families: two cards, actual matched dimensions, variant file selection and search: OK")
+                if (System.getenv("RENDER_PREVIEW") == "1") renderPreview(project, group)
             } finally {
                 panel.dispose()
             }
@@ -434,5 +435,70 @@ private fun checkExecutorCancellation(service: ImageScanService) {
         check(!interrupted) { "Cancellation prevents the next queued scan from running" }
     } finally {
         finish.countDown()
+    }
+}
+
+private fun renderPreview(project: com.intellij.openapi.project.Project, source: ImageGroup) {
+    // Render the real panel with a dark palette without starting the full IDE.
+    val defaults = javax.swing.UIManager.getDefaults()
+    defaults.keys().toList().forEach { key ->
+        if (defaults[key] is Color) {
+            val name = key.toString().lowercase()
+            val rgb = when {
+                "selectionbackground" in name -> 0x34476a
+                "foreground" in name || "text" in name && "background" !in name -> 0xdfe1e5
+                "background" in name -> 0x2b2d30
+                "shadow" in name -> 0x202124
+                else -> 0x43454a
+            }
+            defaults[key] = javax.swing.plaf.ColorUIResource(rgb)
+        }
+    }
+    listOf("Button.gradient", "CheckBox.gradient", "ScrollBar.gradient").forEach { defaults[it] = listOf(0f, 0f, Color(0x393b40), Color(0x393b40), Color(0x393b40)) }
+    com.intellij.ui.JBColor.setDark(true)
+    val service = ImageScanService(project)
+    ImageScanService::class.java.getDeclaredField("autoCheck").apply { isAccessible = true }.set(service, true)
+    ImageScanService::class.java.getDeclaredField("options").apply { isAccessible = true }.set(service, MatchOptions(true, true))
+    val root = Path.of("/sample/shared/src/commonMain/composeResources")
+    val entries = listOf(
+        source.images[0].copy(path = root.resolve("drawable-hdpi/ic_favorite.png")),
+        source.images[1].copy(path = root.resolve("drawable-xhdpi/ic_favorite.png")),
+        source.images[3].copy(path = Path.of("/sample/profile/src/commonMain/composeResources/drawable/ic_star.png")),
+        source.images[1].copy(path = root.resolve("drawable/illustration_star.png")),
+        source.images[2].copy(path = root.resolve("drawable/ic_star_accent.png")),
+    )
+    val groups = compareAll(entries, MatchOptions(true, true)).groups
+    ImageScanService::class.java.getDeclaredField("snapshot").apply { isAccessible = true }
+        .set(service, ScanSnapshot(groups, entries.size, message = "5 images checked · 1 matching group · No files modified"))
+    val panel = ImagePanel(project, service)
+    try {
+        val frame = javax.swing.JPanel(java.awt.BorderLayout()).apply {
+            add(
+                javax.swing.JLabel("Duplicate Image Finder").apply {
+                    border = javax.swing.BorderFactory.createEmptyBorder(12, 14, 12, 14)
+                    font = font.deriveFont(java.awt.Font.BOLD)
+                },
+                java.awt.BorderLayout.NORTH
+            )
+            add(panel, java.awt.BorderLayout.CENTER)
+            setSize(1600, 760)
+        }
+
+        fun layout(container: java.awt.Container) {
+            container.doLayout()
+            container.components.filterIsInstance<java.awt.Container>().forEach(::layout)
+        }
+        repeat(4) { layout(frame) }
+        val image = BufferedImage(frame.width * 2, frame.height * 2, BufferedImage.TYPE_INT_RGB)
+        image.createGraphics().apply {
+            scale(2.0, 2.0)
+            frame.printAll(this)
+            dispose()
+        }
+        Files.createDirectories(Path.of("docs"))
+        ImageIO.write(image, "png", Path.of("docs/preview.png").toFile())
+    } finally {
+        panel.dispose()
+        service.dispose()
     }
 }

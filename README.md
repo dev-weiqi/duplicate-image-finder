@@ -2,6 +2,10 @@
 
 An Android Studio plugin for finding identical and similar static images across project modules.
 
+![Duplicate Image Finder showing density variants, identical images, size differences, and HEX Tint comparisons](docs/preview.png)
+
+*Plugin panel rendered with sample resources and a dark palette.*
+
 ## Use
 
 Install the ZIP from **Settings → Plugins → ⚙ → Install Plugin from Disk**, then open **View → Tool Windows → Duplicate Image Finder**.
