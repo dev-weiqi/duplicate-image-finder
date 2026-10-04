@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'io.github.devweiqi'
-version = '0.1.4'
+version = '0.1.5'
 
 repositories {
     mavenCentral()
@@ -21,12 +21,16 @@ dependencies {
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions { jvmDefault = org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY }
 }
 
 intellijPlatform {
     pluginVerification {
         ides {
             local(file(providers.gradleProperty('studioPath').orElse('/Applications/Android Studio.app').get()))
+            if (providers.gradleProperty('verifyIdeaVersion').isPresent()) {
+                create('IU', providers.gradleProperty('verifyIdeaVersion').get())
+            }
         }
     }
     pluginConfiguration {

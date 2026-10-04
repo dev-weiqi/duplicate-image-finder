@@ -1,6 +1,5 @@
 package io.github.devweiqi.duplicateimages
 
-import com.android.tools.adtui.webp.WebpMetadata
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
@@ -215,7 +214,7 @@ class ImageScanService(
                         }
                     ApplicationManager.getApplication().invokeLater { if (!disposed && token == generation) roots = scanRoots }
                     cache.keys.removeIf { path -> changed.any { path.startsWith(it) } }
-                    WebpMetadata.ensureWebpRegistered()
+
                     val files = linkedSetOf<Path>()
                     val issues = mutableListOf<String>()
                     var visits = 0
@@ -241,8 +240,9 @@ class ImageScanService(
                                         return FileVisitResult.SKIP_SUBTREE
                                     }
                                     // Prime directory children so IDE VFS can report newly added images.
-                                    ReadAction.run<RuntimeException> {
+                                    ReadAction.computeBlocking<Unit, RuntimeException> {
                                         com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByNioFile(dir)?.children
+                                        Unit
                                     }
                                     return FileVisitResult.CONTINUE
                                 }
