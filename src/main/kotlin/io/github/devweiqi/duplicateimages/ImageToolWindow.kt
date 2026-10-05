@@ -93,6 +93,7 @@ class ImagePanel(
         isVisible = false
     }
     private var selectingVariant = false
+    private val displayedVariants = mutableMapOf<java.nio.file.Path, ImageEntry>()
     private val dimensions = JBCheckBox("Include different dimensions", service.options.dimensions)
     private val tint = JBCheckBox("Include different Tint", service.options.tint)
     private val auto = JBCheckBox("Auto-check changes", service.autoCheck)
@@ -157,7 +158,7 @@ class ImagePanel(
         images.layoutOrientation = JList.HORIZONTAL_WRAP
         images.visibleRowCount = -1
         images.fixedCellWidth = JBUI.scale(220)
-        images.fixedCellHeight = JBUI.scale(232)
+        images.fixedCellHeight = JBUI.scale(256)
         images.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
         images.cellRenderer =
             ImageRenderer({ image ->
@@ -167,7 +168,7 @@ class ImagePanel(
                     ?.let(::imageId)
                     .orEmpty()
             }, { image -> current?.variants?.get(image.path)?.size ?: 1 }, { image ->
-                if (images.selectedValuesList.singleOrNull() === image) selectedImage() ?: image else image
+                displayedVariants[image.path] ?: image
             })
         images.addListSelectionListener { if (!it.valueIsAdjusting) selectResource() }
         images.accessibleContext.accessibleName = "Images in selected group. Select a file to inspect its full path."
@@ -211,6 +212,7 @@ class ImagePanel(
             if (!it.valueIsAdjusting && table.selectedRow in tableModel.pairs.indices) {
                 val pair = tableModel.pairs[table.selectedRow]
                 val entries = current?.images.orEmpty()
+                displayMatch(pair.first, pair.second)
                 images.selectedIndices = intArrayOf(entries.indexOf(pair.first), entries.indexOf(pair.second))
             }
         }
@@ -232,7 +234,7 @@ class ImagePanel(
                     BorderLayout.CENTER,
                 )
                 add(
-                    textLabel("Suggested matches can be intentional variants. No files are modified.").apply {
+                    textLabel("Cards show matched variants; select a pair to compare. Different densities can imply different display sizes.").apply {
                         border = JBUI.Borders.empty(8)
                     },
                     BorderLayout.SOUTH,
@@ -273,7 +275,18 @@ class ImagePanel(
                     ?: Messages.showInfoMessage(project, "File is no longer available. Scan images again.", TOOL_WINDOW)
             }
         }
-        variant.addActionListener { if (!selectingVariant) showSelected() }
+        variant.addActionListener {
+            if (!selectingVariant) {
+                val representative = images.selectedValuesList.singleOrNull()
+                val entry = current?.variants?.get(representative?.path)?.getOrNull(variant.selectedIndex)
+                if (representative != null && entry != null) {
+                    displayedVariants[representative.path] = entry
+                    table.clearSelection()
+                    heading.text = "Manual variant preview · Select a pair below to restore matched variants"
+                }
+                showSelected()
+            }
+        }
         copy.addActionListener { selectedImage()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it.path.toString())) } }
         actions.addActionListener { showActions() }
         service.listeners.add(listener)
@@ -282,7 +295,7 @@ class ImagePanel(
 
     private fun selectedImage(): ImageEntry? {
         val representative = images.selectedValuesList.singleOrNull() ?: return null
-        return current?.variants?.get(representative.path)?.getOrNull(variant.selectedIndex) ?: representative
+        return displayedVariants[representative.path] ?: representative
     }
 
     private fun selectResource() {
@@ -290,9 +303,24 @@ class ImagePanel(
         variant.removeAllItems()
         val entries = current?.variants?.get(images.selectedValuesList.singleOrNull()?.path).orEmpty()
         entries.forEach { variant.addItem("${it.densityVariant?.density ?: "Original"} · ${it.dimensions}") }
+        val displayed = images.selectedValuesList.singleOrNull()?.let { displayedVariants[it.path] }
+        if (entries.isNotEmpty()) variant.selectedIndex = entries.indexOfFirst { it.path == displayed?.path }.coerceAtLeast(0)
         variant.isVisible = entries.size > 1
         selectingVariant = false
         showSelected()
+    }
+
+    private fun displayMatch(first: ImageEntry, second: ImageEntry) {
+        val group = current ?: return
+        val match = group.matchesByPair[setOf(first.path, second.path)]
+        for (representative in listOf(first, second)) {
+            val family = group.variants[representative.path].orEmpty()
+            displayedVariants[representative.path] =
+                listOfNotNull(match?.first, match?.second).firstOrNull { candidate -> family.any { it.path == candidate.path } }
+                    ?: representative
+        }
+        heading.text = "${imageId(group.images.indexOf(first))} ↔ ${imageId(group.images.indexOf(second))} · ${match?.description ?: "No direct match under current filters"}"
+        selectResource()
     }
 
     private fun showSelected() {
@@ -349,6 +377,7 @@ class ImagePanel(
     private fun showGroup(group: ImageGroup?) {
         if (group != null && current === group) return
         current = group
+        displayedVariants.clear()
         imageModel.clear()
         tableModel.showGroup(group)
         heading.text =
@@ -365,6 +394,14 @@ class ImagePanel(
         }
         // Only the pair table is capped; all images remain available in the card list.
         imageModel.addAll(group.images)
+        group.images.forEach { representative ->
+            val family = group.variants[representative.path].orEmpty()
+            displayedVariants[representative.path] = group.matchesByPair.values
+                .flatMap { listOf(it.first, it.second) }
+                .firstOrNull { candidate -> family.any { it.path == candidate.path } } ?: representative
+        }
+        tableModel.pairs.firstOrNull { group.matchesByPair.containsKey(setOf(it.first.path, it.second.path)) }
+            ?.let { displayMatch(it.first, it.second) }
         images.selectedIndex = 0
         if (group.images.size > 64) heading.text += " · Pair table limited to first 64 images"
     }
@@ -478,6 +515,7 @@ private class ImageRenderer(
                     border = JBUI.Borders.empty(4, 8)
                     add(textLabel("${id(representative)} · ${image.path.fileName}").apply { toolTipText = text })
                     add(textLabel("${image.dimensions} · ${"%.1f".format(image.bytes / 1024.0)} KB"))
+                    add(textLabel("Density: ${image.densityVariant?.density ?: "Original"}"))
                     add(
                         textLabel(
                             sourceLabel(image.path),
@@ -607,11 +645,11 @@ private class PairTableModel : AbstractTableModel() {
         val a = if (forward) match?.first ?: first else match!!.second
         val b = if (forward) match?.second ?: second else match!!.first
 
-        fun dimensions(image: ImageEntry, representative: ImageEntry): String =
-            if ((group?.variants?.get(representative.path)?.size ?: 0) > 1) "${image.densityVariant?.density}: ${image.dimensions}" else image.dimensions
+        fun dimensions(image: ImageEntry): String =
+            image.densityVariant?.let { "${it.density}: ${image.dimensions}" } ?: image.dimensions
         return when (column) {
             0 -> "${imageId(group!!.images.indexOf(first))} ↔ ${imageId(group!!.images.indexOf(second))}"
-            1 -> if (dimensions(a, first) == dimensions(b, second)) dimensions(a, first) else "${dimensions(a, first)} → ${dimensions(b, second)}"
+            1 -> if (dimensions(a) == dimensions(b)) dimensions(a) else "${dimensions(a)} → ${dimensions(b)}"
             2 -> if (a.colorText == b.colorText) a.colorText else "${a.colorText} → ${b.colorText}"
             else -> match?.description ?: "No direct match under current filters"
         }

@@ -72,10 +72,10 @@ data class ImageMatch(
     val description: String
         get() =
             when {
-                exact -> "Identical file"
                 resized && tinted -> "Dimensions + Tint · Suggested"
                 resized -> "Different dimensions · Suggested"
                 tinted -> "Different Tint · Suggested"
+                exact -> "Identical file"
                 first.pixelHash == second.pixelHash -> "Identical pixels"
                 else -> "Similar pixels · Suggested"
             }
@@ -246,8 +246,11 @@ fun compareImages(
     a: ImageEntry,
     b: ImageEntry,
 ): ImageMatch? {
-    if (a.fileHash == b.fileHash) return ImageMatch(a, b, exact = true, resized = false, tinted = false)
-    if (a.pixelHash == b.pixelHash) return ImageMatch(a, b, exact = false, resized = false, tinted = false)
+    // Equal pixels in different density buckets do not have the same resource display size.
+    val differentDensity = a.densityVariant != null && b.densityVariant != null && a.densityVariant.density != b.densityVariant.density
+    val differentDimensions = a.width != b.width || a.height != b.height || differentDensity
+    if (a.fileHash == b.fileHash) return ImageMatch(a, b, exact = true, resized = differentDimensions, tinted = false)
+    if (a.pixelHash == b.pixelHash) return ImageMatch(a, b, exact = false, resized = differentDimensions, tinted = false)
     val aspectRatio = (a.width.toDouble() / a.height) / (b.width.toDouble() / b.height)
     if (!a.visible || !b.visible || abs(1 - aspectRatio) > 0.02 || java.lang.Long.bitCount(a.shape xor b.shape) > 8) return null
     if (!(a.monochrome && b.monochrome) && java.lang.Long.bitCount(a.texture xor b.texture) > 8) return null
@@ -276,7 +279,7 @@ fun compareImages(
     val sameColor = colorError / (coverage * 3) <= 0.0025
     // Tint-invariant matching is deliberately limited to monochrome artwork.
     if (!sameColor && !(a.monochrome && b.monochrome)) return null
-    return ImageMatch(a, b, exact = false, resized = a.width != b.width || a.height != b.height, tinted = !sameColor)
+    return ImageMatch(a, b, exact = false, resized = differentDimensions, tinted = !sameColor)
 }
 
 data class MatchOptions(
@@ -285,6 +288,8 @@ data class MatchOptions(
 ) {
     fun accepts(match: ImageMatch): Boolean =
         when {
+            match.resized && !dimensions -> false
+            match.tinted && !tint -> false
             match.exact || match.first.pixelHash == match.second.pixelHash -> true
             !match.resized && !match.tinted -> false
             else -> (!match.resized || dimensions) && (!match.tinted || tint)

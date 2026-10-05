@@ -60,6 +60,20 @@ private fun runChecks() {
             check(found.groups.isEmpty()) { "Different punctuation symbols must not match across any densities" }
         }
 
+        System.getenv("CHECK_SPEAKER_ROOT")?.let { resourceRoot ->
+            WebpMetadata.ensureWebpRegistered()
+            val originals = Files.walk(Path.of(resourceRoot)).use { paths ->
+                paths.filter { it.fileName.toString() in setOf("ic_media_sound.webp", "icon_voice_room_speaker_active.webp") }.map(::readImage).toList()
+            }
+            check(originals.size == 10)
+            for (options in listOf(MatchOptions(), MatchOptions(tint = true))) {
+                check(compareAll(originals, options).groups.isEmpty()) { "Real speaker resources must not match with dimensions unchecked" }
+            }
+            val enabled = compareAll(originals, MatchOptions(dimensions = true))
+            check(enabled.groups.size == 1 && enabled.groups.single().matches.all { it.resized })
+            println("Real speaker resources: no matches with dimensions unchecked; dimension candidates only when enabled: OK")
+        }
+
         fun symbol(name: String, question: Boolean, size: Int, color: Int = 0x1a1616): ImageEntry {
             val image = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
             image.createGraphics().apply {
@@ -132,6 +146,13 @@ private fun runChecks() {
         check(isDensityVariant(hdpi, xhdpi.copy(path = resourceRoot.resolve("drawable/icon.png"))))
         check(isDensityVariant(hdpi.copy(path = directory.resolve("app/src/main/res/drawable-hdpi/icon.png")), xhdpi.copy(path = directory.resolve("app/src/main/res/drawable-480dpi/icon.webp"))))
         check(!isDensityVariant(a.copy(path = directory.resolve("photos/icon.png")), b.copy(path = directory.resolve("photos/large/icon.png"))))
+        val crossDensityCopy = hdpi.copy(path = resourceRoot.resolve("drawable-xxhdpi/speaker.png"))
+        check(compareAll(listOf(hdpi, crossDensityCopy)).groups.isEmpty()) { "Unchecked dimensions must exclude identical files across different densities" }
+        check(compareAll(listOf(hdpi, crossDensityCopy), MatchOptions(tint = true)).groups.isEmpty())
+        val crossDensityMatch = compareAll(listOf(hdpi, crossDensityCopy), MatchOptions(dimensions = true)).groups.single().matches.single()
+        check(crossDensityMatch.resized && crossDensityMatch.description.contains("dimensions", ignoreCase = true))
+        val pixelCopy = crossDensityCopy.copy(fileHash = "different encoding")
+        check(compareAll(listOf(hdpi, pixelCopy)).groups.isEmpty()) { "Identical pixels must also respect density filtering" }
         val dpiCopies = listOf(hdpi, xhdpi, hdpi.copy(path = resourceRoot.resolve("drawable-hdpi/copy.png")), xhdpi.copy(path = resourceRoot.resolve("drawable-xhdpi/copy.png")))
         for (options in listOf(MatchOptions(), MatchOptions(true, true))) {
             val familyGroup = compareAll(dpiCopies, options).groups.single()
@@ -381,9 +402,20 @@ private fun checkPanel(group: ImageGroup) {
                 check(table.getValueAt(0, 3) == "Identical file")
                 val selector = components(panel).filterIsInstance<javax.swing.JComboBox<*>>().single()
                 check(selector.isVisible && selector.itemCount == 2)
-                selector.selectedIndex = 1
                 val selectedPath = components(panel).filterIsInstance<javax.swing.JTextField>().single { it.accessibleContext.accessibleName == "Selected image full path" }
+                check(selectedPath.text == largeVariant.path.toString()) { "Initial card must display the actual matched variant, not the first density" }
+                selector.selectedIndex = 0
+                check(selectedPath.text == small.path.toString())
+                selector.selectedIndex = 1
                 check(selectedPath.text == largeVariant.path.toString())
+                selector.selectedIndex = 0
+                table.setRowSelectionInterval(0, 0)
+                cards.selectedIndex = 0
+                check(selectedPath.text == largeVariant.path.toString()) { "Pair selection must restore the matched variant" }
+                cards.selectedIndex = 1
+                check(selectedPath.text == copyVariant.path.toString())
+                cards.selectedIndex = 0
+                check(selectedPath.text == largeVariant.path.toString()) { "Changing cards must preserve the matched density" }
                 panel.search.text = "drawable-xhdpi/icon"
                 check(resultList.model.size == 1) { "Search must include hidden density variants" }
                 panel.setSize(1280, 740)
